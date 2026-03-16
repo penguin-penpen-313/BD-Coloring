@@ -297,7 +297,7 @@ html, body {
 
 <div id="zoom-controls">
   <div class="zoom-btn" id="btn-zoom-in">＋</div>
-  <div class="zoom-btn" id="btn-zoom-fit">⊙</div>
+  <div class="zoom-btn" id="btn-zoom-fit" style="font-size:13px;letter-spacing:0;">FIT</div>
   <div class="zoom-btn" id="btn-zoom-out">－</div>
 </div>
 
@@ -676,39 +676,68 @@ function initZoomPan() {
   });
 
   /* ── Touch: pan + pinch zoom ── */
-  let lastTouches = null;
-  let lastDist    = null;
+  // 各フレームの「前回タッチ状態」を保持して差分で更新する方式
+  // → 1本→2本切り替え時の座標ジャンプを防ぐ
+  let prevTouchMidX = 0, prevTouchMidY = 0, prevDist = 0;
+  let touchActive = false;
 
   vp.addEventListener('touchstart', e => {
-    lastTouches = Array.from(e.touches);
+    touchActive = true;
     if (e.touches.length === 1) {
-      panStartX  = e.touches[0].clientX; panStartY  = e.touches[0].clientY;
-      panOriginX = offsetX; panOriginY = offsetY;
-    }
-    if (e.touches.length === 2) {
-      lastDist = getTouchDist(e.touches);
+      prevTouchMidX = e.touches[0].clientX;
+      prevTouchMidY = e.touches[0].clientY;
+      prevDist = 0;
+    } else if (e.touches.length === 2) {
+      prevTouchMidX = (e.touches[0].clientX + e.touches[1].clientX) / 2;
+      prevTouchMidY = (e.touches[0].clientY + e.touches[1].clientY) / 2;
+      prevDist = getTouchDist(e.touches);
     }
   }, { passive:true });
 
   vp.addEventListener('touchmove', e => {
     e.preventDefault();
     if (e.touches.length === 1) {
-      offsetX = panOriginX + (e.touches[0].clientX - panStartX);
-      offsetY = panOriginY + (e.touches[0].clientY - panStartY);
+      const cx = e.touches[0].clientX;
+      const cy = e.touches[0].clientY;
+      offsetX += cx - prevTouchMidX;
+      offsetY += cy - prevTouchMidY;
+      prevTouchMidX = cx;
+      prevTouchMidY = cy;
+      prevDist = 0;
       applyTransform();
-    }
-    if (e.touches.length === 2) {
+    } else if (e.touches.length === 2) {
+      const cx = (e.touches[0].clientX + e.touches[1].clientX) / 2;
+      const cy = (e.touches[0].clientY + e.touches[1].clientY) / 2;
       const dist = getTouchDist(e.touches);
-      if (lastDist) {
-        const cx = (e.touches[0].clientX + e.touches[1].clientX) / 2;
-        const cy = (e.touches[0].clientY + e.touches[1].clientY) / 2;
-        zoomAt(cx, cy, dist / lastDist);
+      // パン（中点の移動）
+      offsetX += cx - prevTouchMidX;
+      offsetY += cy - prevTouchMidY;
+      // ピンチズーム（中点を基準に拡縮）
+      if (prevDist > 0) {
+        const factor = dist / prevDist;
+        const newScale = Math.max(MIN_SCALE, Math.min(MAX_SCALE, scale * factor));
+        const ratio = newScale / scale;
+        offsetX = cx - ratio * (cx - offsetX);
+        offsetY = cy - ratio * (cy - offsetY);
+        scale = newScale;
       }
-      lastDist = dist;
+      prevTouchMidX = cx;
+      prevTouchMidY = cy;
+      prevDist = dist;
+      applyTransform();
     }
   }, { passive:false });
 
-  vp.addEventListener('touchend', () => { lastDist = null; });
+  vp.addEventListener('touchend', e => {
+    // 指が残っている場合は残った指で再初期化
+    if (e.touches.length === 1) {
+      prevTouchMidX = e.touches[0].clientX;
+      prevTouchMidY = e.touches[0].clientY;
+      prevDist = 0;
+    } else if (e.touches.length === 0) {
+      touchActive = false;
+    }
+  });
 
   /* ── Zoom buttons ── */
   const boardEl = document.getElementById('board');
@@ -798,12 +827,20 @@ function renderLightbox(isOpen = false) {
   const tmp = new Image();
   tmp.onload = () => {
     img.src = newSrc;
-    img.style.opacity = '1';  // フェードイン
+    img.style.opacity = '1';
+    // スライドショー中なら画像ロード完了を起点にタイマー再スケジュール
+    if (slideshowTimer !== null) {
+      clearTimeout(slideshowTimer);
+      scheduleNextSlide();
+    }
   };
   tmp.onerror = () => {
-    // 読み込み失敗でもsrcだけ差し替えて表示
     img.src = newSrc;
     img.style.opacity = '1';
+    if (slideshowTimer !== null) {
+      clearTimeout(slideshowTimer);
+      scheduleNextSlide();
+    }
   };
   tmp.src = newSrc;
 
@@ -820,19 +857,26 @@ function renderLightbox(isOpen = false) {
 
 // ── スライドショー ──
 let slideshowTimer = null;
+const SLIDESHOW_INTERVAL = 10000;
+
+function scheduleNextSlide() {
+  // ロード完了（または失敗）から10秒後に次へ
+  slideshowTimer = setTimeout(() => {
+    if (!slideshowTimer) return; // 停止済みなら何もしない
+    lbIndex = (lbIndex + 1) % allPhotos.length;
+    renderLightbox(); // renderLightbox内でscheduleNextSlideが再帰呼び出しされる
+  }, SLIDESHOW_INTERVAL);
+}
 
 function startSlideshow() {
   stopSlideshow();
-  slideshowTimer = setInterval(() => {
-    lbIndex = (lbIndex + 1) % allPhotos.length;
-    renderLightbox();
-  }, 10000);
+  scheduleNextSlide();
   document.getElementById('lb-slideshow').classList.add('playing');
-  document.getElementById('lb-slideshow').textContent = '⏸';
+  document.getElementById('lb-slideshow').textContent = '■';
 }
 
 function stopSlideshow() {
-  if (slideshowTimer) { clearInterval(slideshowTimer); slideshowTimer = null; }
+  if (slideshowTimer) { clearTimeout(slideshowTimer); slideshowTimer = null; }
   document.getElementById('lb-slideshow').classList.remove('playing');
   document.getElementById('lb-slideshow').textContent = '▶';
 }
